@@ -1,6 +1,6 @@
-// Copyright (2015) Sandia Corporation.
-// Under the terms of Contract DE-AC04-94AL85000 with Sandia Corporation,
-// the U.S. Government retains certain rights in this software.
+// Copyright 2015-2021 National Technology & Engineering Solutions of Sandia, LLC (NTESS).
+// Under the terms of Contract DE-NA0003525 with NTESS, the U.S. Government retains certain
+// rights in this software.
 
 package main
 
@@ -185,13 +185,19 @@ Calling stop will put VMs in a paused state. Use "vm start" to restart them.`,
 	{ // vm flush
 		HelpShort: "discard information about quit or failed VMs",
 		HelpLong: `
-Discard information about VMs that have either quit or encountered an error.
-This will remove any VMs with a state of "quit" or "error" from vm info. Names
-of VMs that have been flushed may be reused.`,
+Flush one or more virtual machines. Discard information about VMs that
+have either quit or encountered an error. This will remove VMs with a state of
+"quit" or "error" from vm info. Names of VMs that have been flushed may be
+reused.
+
+Note running without arguments results in the same behavior as using the "all"
+target. See "vm start" for a full description of allowable targets.`,
 		Patterns: []string{
 			"vm <flush,>",
+			"vm <flush,> <vm target>",
 		},
-		Call: wrapBroadcastCLI(cliVMApply),
+		Call:    wrapBroadcastCLI(cliVMApply),
+		Suggest: wrapVMSuggest((VM_QUIT | VM_ERROR), true),
 	},
 	{ // vm hotplug
 		HelpShort: "add and remove USB drives",
@@ -232,10 +238,25 @@ See "vm start" for a full description of allowable targets.`,
 		Suggest: wrapVMSuggest(VM_ANY_STATE, true),
 	},
 	{ // vm net
-		HelpShort: "disconnect or move network connections",
+		HelpShort: "add, disconnect, or move network connections",
 		HelpLong: `
-Disconnect or move existing network connections for one or more VMs. See "vm
+Add, disconnect, or move existing network connections for one or more VMs. See "vm
 start" for a full description of allowable targets.
+
+To add a network connection, you can specify the same options as you do when you add
+connections via vm config when launching VMs. See "vm config net" for more details.
+
+You will need to specify the VLAN of which the interface is a member. Optionally, you may
+specify the brige the interface will be connected on. You may also specify a MAC address for
+the interface. Finally, you may also specify the network device for qemu to use. By default, 
+"e1000" is used. The order is:
+
+	<bridge>,<VLAN>,<MAC>,<driver>
+
+So to add an interface to a vm called vm-0 that is a member of VLAN 100, with a specified MAC
+address, you can use:
+
+	vm net add vm-0 100,00:00:00:00:00:00
 
 Network connections are indicated by their position in vm net (same order in vm
 info) and are zero indexed. For example, to disconnect the first network
@@ -256,6 +277,7 @@ If the bridge name is omitted, the interface will be reconnected to the same
 bridge that it is already on. If the interface is not connected to a bridge, it
 will be connected to the default bridge, "mega_bridge".`,
 		Patterns: []string{
+			"vm net <add,> <vm target> [netspec]...",
 			"vm net <connect,> <vm target> <tap position> <vlan> [bridge]",
 			"vm net <disconnect,> <vm target> <tap position>",
 		},
@@ -458,7 +480,11 @@ func cliVMApply(ns *Namespace, c *minicli.Command, resp *minicli.Response) error
 	case c.BoolArgs["kill"]:
 		return ns.VMs.Kill(c.StringArgs["vm"])
 	case c.BoolArgs["flush"]:
-		return ns.VMs.Flush(ns.ccServer)
+		if len(c.StringArgs["vm"]) == 0 {
+			return ns.VMs.FlushAll(ns.ccServer)
+		} else {
+			return ns.VMs.Flush(c.StringArgs["vm"], ns.ccServer)
+		}
 	}
 
 	return unreachable()
@@ -813,14 +839,17 @@ func cliVMHotplug(ns *Namespace, c *minicli.Command, resp *minicli.Response) err
 
 func cliVMNetMod(ns *Namespace, c *minicli.Command, resp *minicli.Response) error {
 	target := c.StringArgs["vm"]
-
-	pos, err := strconv.Atoi(c.StringArgs["tap"])
-	if err != nil {
-		return err
+	var pos int
+	var err error
+	if !c.BoolArgs["add"] {
+		pos, err = strconv.Atoi(c.StringArgs["tap"])
+		if err != nil {
+			return err
+		}
 	}
 
 	var vlan int
-	if !c.BoolArgs["disconnect"] {
+	if !c.BoolArgs["disconnect"] && !c.BoolArgs["add"] {
 		vlan, err = lookupVLAN(ns.Name, c.StringArgs["vlan"])
 		if err != nil {
 			return err
@@ -834,7 +863,20 @@ func cliVMNetMod(ns *Namespace, c *minicli.Command, resp *minicli.Response) erro
 
 		log.Info("vm networks: %v", vm.GetNetworks())
 
-		if c.BoolArgs["disconnect"] {
+		if c.BoolArgs["add"] {
+			// This will do the work of adding the interface to the vm
+			nics, err := ns.parseVMNets(c.ListArgs["netspec"])
+			if err != nil {
+				return true, err
+			}
+			kvm, ok := vm.(*KvmVM)
+			if !ok {
+				return true, fmt.Errorf("Unable to get Kvm")
+			}
+			for _, n := range nics {
+				err = kvm.AddNIC(n)
+			}
+		} else if c.BoolArgs["disconnect"] {
 			err = vm.NetworkDisconnect(pos)
 		} else {
 			err = vm.NetworkConnect(pos, vlan, bridge)

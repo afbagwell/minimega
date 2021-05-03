@@ -1,6 +1,6 @@
-// Copyright (2015) Sandia Corporation.
-// Under the terms of Contract DE-AC04-94AL85000 with Sandia Corporation,
-// the U.S. Government retains certain rights in this software.
+// Copyright 2015-2021 National Technology & Engineering Solutions of Sandia, LLC (NTESS).
+// Under the terms of Contract DE-NA0003525 with NTESS, the U.S. Government retains certain
+// rights in this software.
 
 package main
 
@@ -429,12 +429,17 @@ func cliNamespaceBridge(ns *Namespace, c *minicli.Command, resp *minicli.Respons
 		if err != nil {
 			return fmt.Errorf("failure looking up %v: %v", host, err)
 		}
-
-		if len(res) >= 1 {
-			// probably fine to use the first?
-			ips[host] = res[0].String()
-		} else if len(res) == 0 {
-			return errors.New("host has no IP")
+		// track whether we found a non-loopback IP address
+		foundIP := false
+		for _, element := range res {
+			if !element.IsLoopback() {
+				foundIP = true
+				ips[host] = element.String()
+				break
+			}
+		}
+		if !foundIP {
+			return errors.New("host has no non-loopback IP")
 		}
 	}
 
